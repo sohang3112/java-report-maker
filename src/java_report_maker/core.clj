@@ -1,7 +1,8 @@
 (ns java-report-maker.core
-  (:require [clojure.reflect :refer [reflect Reflector]]
+  (:require [clojure.reflect :as cr]
             [me.raynes.fs    :as fs])
-  (:import  [java.net URLClassLoader URL]
+  (:import  [clojure.lang DynamicClassLoader Reflector]
+            [java.net URLClassLoader URL]
             [java.io File]
             [javax.tools DiagnosticCollector ToolProvider]
             [org.apache.commons.io FilenameUtils]
@@ -9,6 +10,7 @@
   (:gen-class))
 
 ;; TODO: rewrite to use clojure.reflect API wherever possible (it's simpler!)
+;; TODO: maybe we can do this using import macro somehow?
 
 (defn -main
   "I don't do a whole lot ... yet."
@@ -23,8 +25,7 @@
 
 (def java-file (first java-ls))
 
-; IN PROGRESS: Convert Java code in .experimental.java (using JavaCompiler)
-; to Clojure
+; TODO: use DynamicClassLoader (is it simpler? need to check..)
 
 (def diagnostics (DiagnosticCollector.))
 (def compiler (ToolProvider/getSystemJavaCompiler))
@@ -39,27 +40,22 @@
             options
             nil   ;; classes
             compile-unit))
-(.call task)
+(if (.call task)
+  ;; Successful Compile
+  (let [class-loader (URLClassLoader. [(.. java-dir-file toURI toURL)]),
+        dynamic-class (->> java-file
+                           .getName
+                           FilenameUtils/getBaseName
+                           (.loadClass class-loader))]
 
-;; if call task => true
+    ;; NOTE: If the dynamic main method being called prints to the terminal,
+    ;; it will show in the terminal only, not in the REPL output.
+    (with-out-str (Reflector/invokeStaticMethod dynamic-class "main"
+                                  (object-array [(into-array ["arg1" "arg2"])]))))
+  ;; Compilation Error
+  (doseq [diag (.getDiagnostics diagnostics)]
+    (println (str diag))))
 
-(def class-loader
-  (-> java-dir-file
-      .toURI
-      .toURL
-      vector
-      into-array
-      URLClassLoader.))
+;; finally (cleanup)
 
-(def dynamic-class
-  (->> java-file
-       .getName
-       FilenameUtils/getBaseName
-       (.loadClass class-loader)))
-
-(Reflector/invokeStaticMethod dynamic-class "main" 
-                              (object-array [(into-array ["arg1" "arg2"])]))
-
-;; if call task => false
-
-(.getDiagnostics diagnostics)
+;(.close file-manager)
