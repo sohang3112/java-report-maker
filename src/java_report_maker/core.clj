@@ -3,7 +3,8 @@
             [me.raynes.fs    :as fs])
   (:import  [clojure.lang DynamicClassLoader Reflector]
             [java.net URLClassLoader URL]
-            [java.io File]
+            [java.io File ByteArrayOutputStream PrintStream FileOutputStream
+             FileDescriptor]
             [javax.tools DiagnosticCollector ToolProvider]
             [org.apache.commons.io FilenameUtils]
             [org.apache.commons.lang3 ArrayUtils])
@@ -17,7 +18,24 @@
   [& args]
   (println "Hello, World!"))
 
-(def string-array-class (.getClass (into-array [""])))
+;; Below macros with-stdout, with-stdout-str adapted from:
+;; https://stackoverflow.com/a/4183433/12947681
+
+(defmacro with-stdout [stdout & body]
+  "Redirects stdout, executes body, and then resets stdout,
+   NOTE: only works for Java methods, doesn't work with Clojure code"
+  `(try
+     (System/setOut ~stdout)
+     ~@body
+     (finally
+       (-> FileDescriptor/out FileOutputStream. PrintStream. System/setOut))))
+
+(defmacro with-stdout-str [& body]
+  "Captures stdout of Java method as a string.
+   NOTE: doesn't work for Clojure code"
+  `(let [baos# (ByteArrayOutputStream.)]
+     (with-stdout (PrintStream. baos#) ~@body)
+     (.toString baos#)))
 
 (def java-dir "D:/java-sample-programs")
 (def java-dir-file (File. java-dir))
@@ -42,19 +60,24 @@
             compile-unit))
 (if (.call task)
   ;; Successful Compile
-  (let [class-loader (URLClassLoader. [(.. java-dir-file toURI toURL)]),
+  (let [class-loader (-> [(.. java-dir-file toURI toURL)]
+                         into-array
+                         URLClassLoader.),
         dynamic-class (->> java-file
                            .getName
                            FilenameUtils/getBaseName
-                           (.loadClass class-loader))]
-
-    ;; NOTE: If the dynamic main method being called prints to the terminal,
-    ;; it will show in the terminal only, not in the REPL output.
-    (with-out-str (Reflector/invokeStaticMethod dynamic-class "main"
-                                  (object-array [(into-array ["arg1" "arg2"])]))))
-  ;; Compilation Error
-  (doseq [diag (.getDiagnostics diagnostics)]
-    (println (str diag))))
+                           (.loadClass class-loader))
+        main-output (with-stdout-str
+                      (Reflector/invokeStaticMethod
+                       dynamic-class
+                       "main"
+                       (object-array [(into-array ["arg1" "arg2"])])))]
+    (println "MAIN OUTPUT:")
+    (println main-output)
+  ;; Compilation Error ;; NOTE: with-out-str (standard Clojure macro) didn't work here
+    (doseq [diag (.getDiagnostics diagnostics)]
+      (println "COMPILE ERROR:")
+      (println (str diag)))))
 
 ;; finally (cleanup)
 
