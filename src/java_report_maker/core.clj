@@ -46,39 +46,64 @@
 ; TODO: use DynamicClassLoader (is it simpler? need to check..)
 
 (def diagnostics (DiagnosticCollector.))
-(def compiler (ToolProvider/getSystemJavaCompiler))
-(def file-manager (.getStandardFileManager compiler diagnostics nil nil))
-(def options ["-classpath" java-dir])
-(def compile-unit (.getJavaFileObjectsFromFiles file-manager [java-file]))
-(def task
-  (.getTask compiler
-            nil   ;; out
-            file-manager
-            diagnostics
-            options
-            nil   ;; classes
-            compile-unit))
-(if (.call task)
-  ;; Successful Compile
-  (let [class-loader (-> [(.. java-dir-file toURI toURL)]
-                         into-array
-                         URLClassLoader.),
-        dynamic-class (->> java-file
-                           .getName
-                           FilenameUtils/getBaseName
-                           (.loadClass class-loader))
-        main-output (with-stdout-str
-                      (Reflector/invokeStaticMethod
-                       dynamic-class
-                       "main"
-                       (object-array [(into-array ["arg1" "arg2"])])))]
-    (println "MAIN OUTPUT:")
-    (println main-output)
-  ;; Compilation Error ;; NOTE: with-out-str (standard Clojure macro) didn't work here
+(def java-compiler (ToolProvider/getSystemJavaCompiler))
+
+
+(defn reflect-find-method 
+  "Finds all method overloads corresponding to `method-symbol` in `object`.
+   
+   For Example: 
+
+   ```clojure
+   (first (reflect-find-method System/out 'println))
+   ``` 
+
+   outputs information about the first overload of the Java method
+   `System.out.println`:
+   
+   ```clojure
+   {:name println,
+    :return-type void,
+    :declaring-class java.io.PrintStream,
+    :parameter-types [long],
+    :exception-types [],
+    :flags #{:public}}
+   ```"
+  [object method-symbol]
+  (->> object 
+      cr/reflect 
+      :members 
+      (filter #(= (:name %) method-symbol))))
+
+;; TODO: Refactor - this is ugly (too nested) !!
+(with-open [file-manager (.getStandardFileManager java-compiler diagnostics nil nil)]
+  (if (.call
+       (.getTask java-compiler
+                 nil   ;; out
+                 file-manager
+                 diagnostics
+                 ["-classpath" java-dir]   ;; options
+                 nil   ;; classes
+                 (.getJavaFileObjectsFromFiles file-manager [java-file])))
+
+    (let [class-loader (-> [(.. java-dir-file toURI toURL)]
+                           into-array
+                           URLClassLoader.),
+          dynamic-class (->> java-file
+                             .getName
+                             FilenameUtils/getBaseName
+                             (.loadClass class-loader)),
+
+        ;; NOTE: with-out-str (standard Clojure macro) didn't work here
+        ;; So I had to make this custom macro with-stdout-str
+          main-output (with-stdout-str
+                        (Reflector/invokeStaticMethod
+                         dynamic-class
+                         "main"
+                         (object-array [(into-array ["arg1" "arg2"])])))]
+      (println "COMPILED SUCCESSFULLY")
+      (println "MAIN OUTPUT:")
+      (println main-output))
     (doseq [diag (.getDiagnostics diagnostics)]
       (println "COMPILE ERROR:")
       (println (str diag)))))
-
-;; finally (cleanup)
-
-;(.close file-manager)
